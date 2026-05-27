@@ -1,73 +1,145 @@
 # Telegram Bridge Specs
 
-Spec IDs: `TG-001` – `TG-030`
+Spec IDs: `TG-001` – `TG-028`  
+Last updated: 2026-05-27
 
 ---
 
-## Overview
+## Core Design Principle
 
-The Telegram Bridge is a standalone Python microservice that connects a
-Telegram bot to the local OpenHands agent-server. It lets a user chat with
-their agent directly from any Telegram client (phone, desktop, web) without
-opening the Agent Canvas UI.
+**The Telegram bot is a second frontend for Agent Canvas — not a separate AI
+service.** When you message the bot, you are talking to the exact same agent
+you talk to through the browser: same conversation history, same LLM
+configuration, same tools, same workspace. Telegram is just another client,
+exactly the way the browser is a client today.
 
-### Architecture
+The bridge itself contains zero AI logic. It is a thin adapter:
+receive message from Telegram → forward to agent-server → wait for reply →
+send back to Telegram.
+
+---
+
+## Architecture
 
 ```
-Telegram User
+Your phone (mobile data)
+    │
     │  sends message
     ▼
-Telegram Bot API
-    │  POST /telegram/webhook  (webhook mode)
-    │  OR poll getUpdates      (dev/polling mode)
+Telegram's servers  ◄──────── bridge polls every ~1 s (polling mode)
+    │                         Your phone never touches your laptop directly.
+    │  update delivered       Telegram acts as the relay.
     ▼
-┌────────────────────────────────────────────┐
-│  telegram/bridge/   (FastAPI, port 18002)  │
-│                                            │
-│  • Webhook / polling receiver              │
-│  • SQLite session store                    │
-│    (chat_id  →  conversation_id)           │
-│  • Agent-server REST client                │
-│  • Response poller / WebSocket listener    │
-└────────────────────────────────────────────┘
-    │  POST /api/conversations                (start conv)
-    │  WebSocket /ws/{conv_id}                (send / receive)
-    │  GET  /api/conversations/{conv_id}      (status check)
-    ▼
-Agent Server  :18000
-    │
-    ▼
-LLM → reply  →  bridge  →  Telegram sendMessage  →  User
+┌─────────────────────────────────────────────────────────┐
+│  telegram/bridge/  — service #4 inside Docker image     │
+│                       port 18002                         │
+│                                                          │
+│  • Polling receiver  (default, no public URL needed)     │
+│  • OR Webhook receiver  (opt-in for production)          │
+│  • Owner-only gate   (only your chat_id is accepted)     │
+│  • SQLite session    (chat_id → conversation_id)         │
+│  • Agent-server client  (REST + WebSocket)               │
+└─────────────────────────────────────────────────────────┘
+         │                              │
+         │  local backend               │  cloud backend
+         │  POST /api/conversations     │  POST /api/v1/app-conversations
+         │  WS   /ws/{conv_id}          │  WS   {sandbox_url}/ws/{conv_id}
+         ▼                              ▼
+  Agent Server :18000            OpenHands Cloud
+  (same Docker container)        app.all-hands.dev
+         │                              │
+         └──────────────┬───────────────┘
+                        │  same LLM, same conversation,
+                        │  same history as the browser UI
+                        ▼
+               reply text  →  Telegram sendMessage  →  Your phone
 ```
+
+**Why polling works on mobile:** Your phone connects to Telegram's servers, not
+to your laptop. The bridge reaches *out* to Telegram every second. Telegram
+queues incoming messages until the bridge picks them up. No inbound ports, no
+public URL, no port-forwarding required. This works from behind any home
+router, corporate firewall, or Docker network.
+
+---
+
+## Deployment model
+
+The bridge is **service #4 in the existing Docker image** — the same image
+already used to run agent-canvas. It starts automatically when
+`TELEGRAM_BOT_TOKEN` is set. Users who do not set the token see no change.
+
+```bash
+# Local test — one command, nothing else to install:
+docker run -e TELEGRAM_BOT_TOKEN=your_token -p 8000:8000 \
+  ghcr.io/openhands/agent-canvas
+
+# Always-on cloud — add your OpenHands Cloud API key:
+docker run -e TELEGRAM_BOT_TOKEN=your_token \
+           -e OPENHANDS_API_KEY=your_cloud_key \
+           -p 8000:8000 \
+           ghcr.io/openhands/agent-canvas
+```
+
+---
+
+## Two backends, one bridge
+
+### Local (default)
+Bridge talks to the agent-server co-located in the same Docker container at
+`http://127.0.0.1:18000`. Auth: `SESSION_API_KEY` as `X-Session-API-Key`
+header. Works immediately with no extra config. Agent stops when the container
+stops.
+
+### Cloud (always-on)
+Bridge talks to `https://app.all-hands.dev` using `OPENHANDS_API_KEY`.
+Conversations persist in the cloud even when the container is not running.
+Auth: `Authorization: Bearer {OPENHANDS_API_KEY}` header. The bridge can run
+anywhere — the container, a tiny VPS, or Railway free-tier.
+
+The bridge detects which backend to use at startup:
+- `OPENHANDS_API_KEY` is set → cloud mode
+- `OPENHANDS_API_KEY` is absent → local mode
 
 ---
 
 ## File & Package Layout
 
-All new files created by this spec live under `telegram/` at the repository
-root unless another path is explicitly named.
+All new files live under `telegram/` at the repository root unless explicitly
+stated otherwise.
 
 ```
 telegram/
-├── pyproject.toml          # Python package: fastapi, uvicorn, aiohttp,
-│                           #   python-telegram-bot[webhooks], aiosqlite
-├── README.md               # Quick-start: BotFather, env vars, run commands
+├── pyproject.toml            # package: openhands-telegram-bridge
+├── README.md                 # setup guide (see TG-028)
 └── bridge/
     ├── __init__.py
-    ├── __main__.py         # python -m bridge  entry point
-    ├── app.py              # FastAPI application (webhook + health endpoint)
-    ├── config.py           # Config dataclass built from env vars
-    ├── session.py          # aiosqlite-backed chat_id → conversation_id store
-    ├── agent_client.py     # Agent-server REST + WebSocket client
-    └── handlers.py         # Telegram update handlers (message, /start, /new)
+    ├── __main__.py           # entry point: python -m bridge
+    ├── app.py                # FastAPI app — webhook endpoint + /health
+    ├── config.py             # BridgeConfig dataclass from env vars
+    ├── session.py            # aiosqlite chat_id → conv_id store
+    ├── agent_client.py       # REST + WebSocket client (local and cloud)
+    └── handlers.py           # Telegram update handlers
 
-scripts/
-└── dev-with-telegram.mjs   # Extends dev-with-automation to also launch bridge
+docker/
+└── entrypoint.sh             # gains service #4 block (TG-019)
+
+docker/
+└── Dockerfile                # gains pip install ./telegram (TG-019)
 
 config/
-└── defaults.json           # gains  "telegram": 18002  under "ports"
+└── defaults.json             # gains ports.telegram: 18002 (TG-016)
 
-.env.sample                 # gains  TELEGRAM_BOT_TOKEN=  and  TELEGRAM_WEBHOOK_URL=
+.env.sample                   # gains Telegram section (TG-018)
+
+src/routes/
+└── telegram-settings.tsx     # new Settings > Integrations > Telegram page
+
+src/components/features/
+└── integrations/
+    └── telegram/
+        ├── telegram-settings-page.tsx
+        └── telegram-status-badge.tsx
 ```
 
 ---
@@ -78,47 +150,53 @@ config/
 
 ### TG-001 — Python package manifest
 
-`telegram/pyproject.toml` shall declare a project named `openhands-telegram-bridge`
-with these runtime dependencies:
+`telegram/pyproject.toml` shall declare a project named
+`openhands-telegram-bridge` with these runtime dependencies:
 
 | Package | Minimum version | Purpose |
 |---|---|---|
-| `fastapi` | `0.115` | HTTP server & webhook endpoint |
+| `fastapi` | `0.115` | HTTP server + webhook endpoint |
 | `uvicorn[standard]` | `0.30` | ASGI server |
 | `python-telegram-bot[webhooks]` | `21.0` | Telegram Bot API client (async) |
 | `aiohttp` | `3.9` | HTTP requests to agent-server |
 | `aiosqlite` | `0.20` | Async SQLite for session store |
+| `websockets` | `13.0` | WebSocket client for agent-server events |
 
-The project shall include a `[project.scripts]` entry so that the bridge can
-be invoked as `openhands-telegram-bridge` when installed.
+`[project.scripts]` shall expose `openhands-telegram-bridge` as the CLI
+entry point (`bridge.__main__:main`).
 
 ---
 
 ### TG-002 — Config from environment variables
 
-`bridge/config.py` shall expose a `BridgeConfig` dataclass (or simple attrs
-class) populated by reading environment variables at startup.
+`bridge/config.py` shall expose a `BridgeConfig` dataclass populated at
+startup from environment variables.
 
 | Env var | Required | Default | Description |
 |---|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | **Yes** | — | Bot token from @BotFather |
-| `TELEGRAM_WEBHOOK_URL` | No | `""` | Full HTTPS URL for webhook mode. Empty = polling mode. |
-| `TELEGRAM_WEBHOOK_SECRET` | No | `""` | Telegram webhook secret token sent as `X-Telegram-Bot-Api-Secret-Token` header |
-| `TELEGRAM_PORT` | No | `18002` | Port the FastAPI service listens on |
-| `TELEGRAM_DB_PATH` | No | `~/.openhands/agent-canvas/telegram.db` | SQLite database path |
-| `AGENT_SERVER_URL` | No | `http://localhost:18000` | Agent-server base URL |
-| `SESSION_API_KEY` | No | `""` | Passed as `X-Session-API-Key` header on all agent-server calls |
-| `OPENHANDS_WORKING_DIR` | No | `""` | Forwarded as `working_dir` when creating a new conversation |
+| `TELEGRAM_BOT_TOKEN` | **Yes** | — | Token from @BotFather |
+| `TELEGRAM_OWNER_CHAT_ID` | No | `""` | Numeric Telegram chat ID of the owner. If empty, the first person to message the bot becomes the owner (chat_id saved to DB). |
+| `TELEGRAM_WEBHOOK_URL` | No | `""` | Full HTTPS base URL for webhook mode. Empty → polling mode (default). |
+| `TELEGRAM_WEBHOOK_SECRET` | No | `""` | Webhook signature verification token |
+| `TELEGRAM_PORT` | No | `18002` | FastAPI listen port |
+| `TELEGRAM_DB_PATH` | No | `~/.openhands/agent-canvas/telegram.db` | SQLite file path |
+| `AGENT_SERVER_URL` | No | `http://127.0.0.1:18000` | Local agent-server URL |
+| `SESSION_API_KEY` | No | `""` | Local agent-server auth key |
+| `OPENHANDS_API_KEY` | No | `""` | OpenHands Cloud API key. When set, cloud mode is active. |
+| `OPENHANDS_HOST` | No | `https://app.all-hands.dev` | Cloud host. Only used when `OPENHANDS_API_KEY` is set. |
+| `OPENHANDS_WORKING_DIR` | No | `""` | Passed as `working_dir` on new local conversations |
 
-`BridgeConfig` shall validate at startup that `TELEGRAM_BOT_TOKEN` is non-empty
-and log a clear error + exit with code 1 if it is missing.
+**Startup validation:** If `TELEGRAM_BOT_TOKEN` is empty, log a clear error
+and exit with code 1. Log the active mode (`local` or `cloud`) and
+`polling` or `webhook` at startup.
 
 ---
 
 ### TG-003 — SQLite session store
 
-`bridge/session.py` shall implement a `SessionStore` class backed by
-`aiosqlite` with the following schema:
+`bridge/session.py` shall implement `SessionStore` backed by `aiosqlite`.
+
+**Schema:**
 
 ```sql
 CREATE TABLE IF NOT EXISTS sessions (
@@ -127,495 +205,602 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
   updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS owner (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  chat_id       INTEGER NOT NULL
+);
 ```
 
-`SessionStore` shall expose:
+**API:**
 
-- `async get(chat_id: int) -> str | None` — returns `conv_id` or `None`
-- `async set(chat_id: int, conv_id: str) -> None` — upsert
-- `async delete(chat_id: int) -> None` — remove session (used by `/new` command)
-- `async open() -> None` / `async close() -> None` — lifecycle hooks called by
-  FastAPI's `lifespan` handler
+- `async get(chat_id: int) -> str | None`
+- `async set(chat_id: int, conv_id: str) -> None` — upsert, updates `updated_at`
+- `async delete(chat_id: int) -> None`
+- `async get_owner() -> int | None` — returns the whitelisted owner chat_id
+- `async set_owner(chat_id: int) -> None` — called once on first message if `TELEGRAM_OWNER_CHAT_ID` was not pre-set
+- `async open() / async close()` — called by FastAPI lifespan
 
 ---
 
-### TG-004 — Webhook endpoint
+### TG-004 — FastAPI app and webhook endpoint
 
-`bridge/app.py` shall register a FastAPI route:
+`bridge/app.py` shall create a FastAPI application with two routes:
 
+**`POST /telegram/webhook`**
+- Validates `X-Telegram-Bot-Api-Secret-Token` header when
+  `TELEGRAM_WEBHOOK_SECRET` is non-empty (HTTP 403 on mismatch).
+- Deserializes the `Update` and dispatches to `handlers.py`.
+- Returns HTTP 200 within 3 seconds. Slow work runs via `BackgroundTasks`.
+
+**`GET /health`**
+```json
+{
+  "status": "ok",
+  "mode": "polling" | "webhook",
+  "backend": "local" | "cloud",
+  "owner_set": true | false
+}
 ```
-POST /telegram/webhook
-```
-
-**Request validation:** When `TELEGRAM_WEBHOOK_SECRET` is non-empty, the
-handler shall reject requests that do not carry a matching
-`X-Telegram-Bot-Api-Secret-Token` header with HTTP 403.
-
-**Processing:** The handler shall deserialize the Telegram `Update` object,
-dispatch it to the appropriate handler in `handlers.py`, and **always** return
-HTTP 200 to Telegram within 3 seconds (use `BackgroundTasks` for slow work).
-
-**Health endpoint:**
-
-```
-GET /health
-```
-
-Returns `{"status": "ok", "mode": "webhook"|"polling"}`.
 
 ---
 
-### TG-005 — Polling mode for local development
+### TG-005 — Polling mode (default)
 
-When `TELEGRAM_WEBHOOK_URL` is empty, the bridge shall start in **polling mode**:
+**Polling is the default and recommended mode.** No public URL, no HTTPS
+certificate, no firewall rules needed. Works immediately on any machine.
 
-- On startup, call `bot.delete_webhook()` to ensure Telegram is not holding a
-  stale webhook registration.
-- Launch `Application.run_polling()` in a background thread (using
-  `python-telegram-bot`'s built-in runner). The FastAPI server shall still start
-  on `TELEGRAM_PORT` to expose the `/health` endpoint.
-- Log clearly at startup: `Running in POLLING mode — suitable for local dev only`.
+When `TELEGRAM_WEBHOOK_URL` is empty:
+1. On startup, call `bot.delete_webhook()` to clear any stale Telegram webhook.
+2. Run `Application.run_polling()` in a background asyncio task.
+3. FastAPI still starts on `TELEGRAM_PORT` (for the `/health` endpoint).
+4. Log: `[telegram] Running in POLLING mode — no public URL needed`.
 
-When `TELEGRAM_WEBHOOK_URL` is set, the bridge shall operate in **webhook mode**:
+When `TELEGRAM_WEBHOOK_URL` is set (opt-in, production):
+1. Register: `bot.set_webhook(url=f"{TELEGRAM_WEBHOOK_URL}/telegram/webhook", secret_token=...)`.
+2. Log: `[telegram] Webhook registered at {url}/telegram/webhook`.
 
-- On startup, call `bot.set_webhook(url=..., secret_token=...)`.
-- Log clearly: `Webhook registered at {TELEGRAM_WEBHOOK_URL}/telegram/webhook`.
+---
+
+### TG-025 — Owner-only lockdown
+
+The bridge is a **private bot**. Only one person — the owner — can use it.
+
+**Owner identification algorithm** (runs at the top of every handler, before
+any agent call):
+
+1. Load `owner_chat_id` from the DB via `session_store.get_owner()`.
+2. If `TELEGRAM_OWNER_CHAT_ID` env var is set, treat that value as the
+   owner regardless of the DB.
+3. If neither is set AND the DB has no owner yet:
+   - The first person to send any message becomes the owner.
+   - Store their `chat_id` via `session_store.set_owner(chat_id)`.
+   - Log: `[telegram] Owner set to chat_id={chat_id} on first message`.
+4. If an incoming message comes from a `chat_id` that is NOT the owner:
+   - Do not process the message.
+   - Do not reply.
+   - Log: `[telegram] Rejected message from unknown chat_id={chat_id}`.
+
+**This means:** whoever messages the bot first owns it. To explicitly
+pre-configure ownership, set `TELEGRAM_OWNER_CHAT_ID` in the env.
 
 ---
 
 ### TG-006 — Inbound message handler
 
-`bridge/handlers.py` shall implement `handle_message(update, context)` which
-fires for every plain text message that is NOT a command.
+`bridge/handlers.py` shall implement `handle_message(update, context)`.
 
 Algorithm:
-
-1. Extract `chat_id` and `text` from `update.message`.
-2. Look up `conv_id = await session_store.get(chat_id)`.
-3. If `conv_id` is `None`, call `agent_client.create_conversation(text)` to
-   start a new agent-server conversation → store the returned `conv_id`.
-4. If `conv_id` exists, call `agent_client.send_message(conv_id, text)` to
-   continue the conversation.
-5. Send a `ChatAction.TYPING` indicator via `context.bot.send_chat_action`.
-6. Await `agent_client.wait_for_response(conv_id, after_event_id)` (see TG-009).
-7. Send the agent's reply with `update.message.reply_text(...)`.
-8. Handle all exceptions: log the error and reply with a user-facing apology
-   message (see TG-013).
+1. Run the owner gate (TG-025). Silently return if not owner.
+2. Extract `chat_id` and `text`.
+3. Look up `conv_id = await session_store.get(chat_id)`.
+4. If `None`: call `agent_client.create_conversation(text)` → store returned `conv_id`.
+5. If exists: call `agent_client.send_message(conv_id, text)`.
+6. Start the typing indicator loop (TG-010).
+7. Await `agent_client.wait_for_response(ws)`.
+8. Cancel typing indicator loop.
+9. Send the reply, splitting if needed (TG-011).
+10. Catch all exceptions → send user-facing error message (TG-013).
 
 ---
 
-### TG-007 — New conversation creation via REST
+### TG-026 — Backend selection and agent-server client
 
-`bridge/agent_client.py` shall implement:
+`bridge/agent_client.py` shall implement an `AgentClient` class that detects
+the active backend at init time and routes all API calls accordingly.
 
 ```python
-async def create_conversation(initial_message: str) -> str:
-    """
-    POST /api/conversations
-    Returns the new conversation_id.
-    """
+class AgentClient:
+    def __init__(self, config: BridgeConfig):
+        self.mode = "cloud" if config.openhands_api_key else "local"
 ```
 
-**Request body** (all optional fields beyond `initial_user_message` may be
-omitted if not configured):
+**Local mode — `create_conversation(initial_message: str) -> str`:**
 
-```json
-{
-  "initial_user_message": "<user text>",
+```
+POST {AGENT_SERVER_URL}/api/conversations
+Headers: X-Session-API-Key: {SESSION_API_KEY}
+Body: {
+  "initial_user_message": "<text>",
   "working_dir": "<OPENHANDS_WORKING_DIR if set>",
   "tools": ["terminal", "file_editor", "task_tracker"]
 }
+Returns: conversation_id from response JSON
 ```
 
-**Headers:** Always include `X-Session-API-Key: {SESSION_API_KEY}` when the
-key is non-empty.
+**Cloud mode — `create_conversation(initial_message: str) -> str`:**
 
-**Return value:** Extract `conversation_id` from the JSON response and return it.
+```
+POST {OPENHANDS_HOST}/api/v1/app-conversations
+Headers: Authorization: Bearer {OPENHANDS_API_KEY}
+Body: {
+  "initial_user_message": "<text>"
+}
+Returns: conversation_id from response JSON
+```
+
+The same method signature is used for both modes so `handlers.py` never needs
+to branch on backend type.
+
+---
+
+### TG-007 — *(merged into TG-026)*
+
+See TG-026 for conversation creation. The create-conversation logic for both
+local and cloud is specified there.
 
 ---
 
 ### TG-008 — Follow-up message delivery via WebSocket
 
-`bridge/agent_client.py` shall implement:
+`agent_client.py` shall implement `send_message(conv_id: str, text: str) ->
+websockets.WebSocketClientProtocol`:
 
-```python
-async def send_message(conv_id: str, text: str) -> int:
-    """
-    Connect to ws://{AGENT_SERVER_URL}/ws/{conv_id}?token={SESSION_API_KEY},
-    send a user message event, and return the timestamp of the sent event
-    so the caller can use it as the `after` cursor for response polling.
-    """
+**Local WebSocket URL:**
 ```
+ws://{agent_server_host}/ws/{conv_id}?token={SESSION_API_KEY}
+```
+(derive by replacing `http://` → `ws://` and `https://` → `wss://` in
+`AGENT_SERVER_URL`)
 
-**WebSocket connection URL:**
-`ws://{agent_server_host}/ws/{conv_id}?token={SESSION_API_KEY}`
-(replace `http://` with `ws://` or `https://` with `wss://`).
+**Cloud WebSocket URL:**
+Fetch the sandbox URL from `GET {OPENHANDS_HOST}/api/v1/app-conversations/{conv_id}`,
+extract `conversation_url`, then connect:
+```
+wss://{conversation_url_host}/ws/{conv_id}?token={SESSION_API_KEY}
+```
+Use `Authorization: Bearer {OPENHANDS_API_KEY}` on the GET call.
 
-**Message envelope** (matches the agent-server's expected user action format):
-
+**Message envelope** (same for both modes):
 ```json
 {
   "action": "message",
-  "args": {
-    "content": "<user text>",
-    "image_urls": []
-  }
+  "args": { "content": "<text>", "image_urls": [] }
 }
 ```
 
-After sending, the function shall **leave the WebSocket open** and yield it back
-to `wait_for_response` so the same connection can be used for streaming the
-reply (see TG-009). If the WebSocket cannot be established, raise
-`AgentServerError`.
+Return the open WebSocket so `wait_for_response` reuses the same connection.
+Raise `AgentServerError` if connection fails.
 
 ---
 
 ### TG-009 — Response streaming via WebSocket
 
-`bridge/agent_client.py` shall implement:
-
+`agent_client.py` shall implement:
 ```python
-async def wait_for_response(
-    ws: WebSocketClientConnection,
-    timeout_seconds: int = 120,
-) -> str:
-    """
-    Read events from an open WebSocket until the agent finishes its turn.
-    Returns the full assistant message text.
-    Raises TimeoutError if no response arrives within timeout_seconds.
-    """
+async def wait_for_response(ws, timeout_seconds: int = 120) -> str
 ```
 
-**Termination conditions** (stop listening when ANY of these is received):
+Listen on the open WebSocket. Stop and return accumulated assistant text when:
 
-| Event type | Field check | Action |
+| Event | Field | Action |
 |---|---|---|
-| `MessageObservation` | `source == "agent"` | Accumulate message text; continue if more expected |
-| `AgentStateChangedObservation` | `agent_state in ("paused", "finished", "error")` | Stop and return accumulated text |
+| `MessageObservation` | `source == "agent"` | Accumulate text |
+| `AgentStateChangedObservation` | `agent_state in ("paused", "finished", "error")` | Stop |
 
-**Agent state mapping:** If `agent_state == "error"`, raise `AgentServerError`
-so TG-013 can send an apology message.
+If `agent_state == "error"` → raise `AgentServerError`.
+If timeout elapses → raise `TimeoutError`.
+Always close the WebSocket on return or raise.
 
-**Timeout:** If `timeout_seconds` elapses without a termination event, raise
-`TimeoutError`.
+---
 
-The WebSocket shall be closed after this function returns or raises.
+### TG-027 — Conversation appears in Agent Canvas UI
+
+Because the bridge creates real conversations on the agent-server (local) or
+OpenHands Cloud, every Telegram exchange is automatically visible in the
+Agent Canvas browser UI:
+
+- **Local**: The conversation appears in the conversations panel at
+  `http://localhost:8000` alongside any browser-started conversations.
+- **Cloud**: The conversation appears at `https://app.all-hands.dev` in the
+  user's conversation list.
+
+The user can switch between Telegram and browser mid-task with no friction —
+context is shared because it is the same conversation object. No sync, no
+export, no copy-paste required.
+
+This spec does not require any additional implementation — it is a free
+consequence of the architecture. The bridge shall include a note about this
+in its README (TG-028).
 
 ---
 
 ### TG-010 — Typing indicator persistence
 
-The bridge shall **re-send** `ChatAction.TYPING` every 4 seconds while
-`wait_for_response` is running. Telegram typing indicators auto-expire after
-5 seconds; periodic re-sends ensure the indicator stays visible for long agent
-responses.
-
-Implementation: wrap the indicator send in a `asyncio.create_task` loop that
-runs concurrently with `wait_for_response` and is cancelled when the response
-arrives.
+Re-send `ChatAction.TYPING` every 4 seconds while `wait_for_response` is
+running (Telegram indicators expire after 5 seconds). Use an `asyncio.Task`
+that loops independently and is cancelled when the response arrives.
 
 ---
 
 ### TG-011 — Long message splitting
 
-Telegram messages are limited to **4 096 characters**. The bridge shall split
-agent responses that exceed this limit into sequential messages:
+Telegram hard limit: 4 096 characters per message.
 
-1. Split on the last newline boundary before the 4 096-char mark to avoid
-   cutting mid-sentence.
-2. Send each chunk with `reply_text` (first chunk) and `send_message` with
-   `reply_to_message_id` (subsequent chunks).
-3. Add a small async delay (100 ms) between chunks to preserve order.
+Split on the last `\n` before the limit. Send first chunk via `reply_text`,
+subsequent chunks via `send_message(reply_to_message_id=...)`. Add 100 ms
+delay between chunks to preserve ordering.
 
 ---
 
 ### TG-012 — `/start` and `/new` commands
 
-`bridge/handlers.py` shall register two command handlers:
+Both commands run the owner gate first (TG-025) and silently ignore non-owners.
 
 **`/start`**
-- If no session exists: reply with a welcome message explaining the bot and
-  prompt the user to type their first task.
-- If a session exists: confirm the current session is active and offer `/new`
-  to start fresh.
+- No session: welcome message + prompt to type first task. Include a note that
+  this conversation will also be visible in the Agent Canvas UI.
+- Session exists: confirm active session, offer `/new` to start fresh.
 
 **`/new`**
-- Delete the current session via `session_store.delete(chat_id)`.
+- `session_store.delete(chat_id)`.
 - Reply: *"Starting a new conversation. What would you like help with?"*
-
-Both handlers shall respond in under 3 seconds (no agent call required).
 
 ---
 
 ### TG-013 — Error handling
 
-The bridge shall handle three error categories:
-
 | Situation | User-facing message |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` missing at startup | Log error + exit (never reaches users) |
-| Agent server unreachable | *"⚠️ The agent server is not running. Please start it and try again."* |
-| Agent returns error state | *"❌ The agent encountered an error. Try `/new` to start a fresh conversation."* |
-| Response timeout (> 120 s) | *"⏳ The agent is taking longer than expected. Your conversation is still running — check the Canvas UI."* |
-| Unexpected exception | Log full traceback; reply *"Something went wrong. Please try again or use `/new` to reset."* |
+| Missing `TELEGRAM_BOT_TOKEN` | Log + exit 1 at startup (never reaches users) |
+| Agent server unreachable | *"⚠️ The agent server isn't reachable. Please check that it's running."* |
+| Cloud auth rejected (401) | *"⚠️ Cloud authentication failed. Check your OPENHANDS_API_KEY."* |
+| Agent returns error state | *"❌ The agent hit an error. Use `/new` to start a fresh conversation."* |
+| Response timeout (> 120 s) | *"⏳ The agent is taking longer than expected. Your conversation is still running — check the Agent Canvas UI."* |
+| Non-owner message | Silently ignore. No reply. |
+| Unexpected exception | Log full traceback; reply *"Something went wrong. Try again or use `/new` to reset."* |
 
-Errors shall never expose stack traces or internal config values to the Telegram user.
+Never expose stack traces, internal URLs, or API keys to Telegram users.
 
 ---
 
 ### TG-014 — Graceful shutdown
 
-On `SIGTERM` or `SIGINT`, the bridge shall:
-
-1. Call `bot.delete_webhook()` (webhook mode only) to deregister from Telegram.
+On SIGTERM / SIGINT:
+1. `bot.delete_webhook()` (webhook mode only).
 2. Close all open WebSocket connections.
-3. Close the SQLite connection pool.
-4. Exit cleanly without leaving orphaned conversations in a `RUNNING` state.
+3. `session_store.close()`.
+4. Exit 0.
 
 ---
 
 ### TG-015 — Agent-server authentication
 
-All HTTP requests to the agent-server shall include the header
-`X-Session-API-Key: {SESSION_API_KEY}` when `SESSION_API_KEY` is non-empty.
-All WebSocket URLs shall append `?token={SESSION_API_KEY}` when the key is
-non-empty. If the agent-server returns HTTP 401, the bridge shall log
-`Session API key rejected — check SESSION_API_KEY env var` and raise
-`AgentServerError`.
+- **Local**: add `X-Session-API-Key: {SESSION_API_KEY}` to every HTTP request
+  and `?token={SESSION_API_KEY}` to every WebSocket URL when the key is set.
+- **Cloud**: add `Authorization: Bearer {OPENHANDS_API_KEY}` to every HTTP
+  request. WebSocket connections to the cloud sandbox use the session key
+  returned with the conversation details, not the cloud API key.
+- On HTTP 401 from either backend: log descriptive error and raise
+  `AgentServerError` (see TG-013).
 
 ---
 
-## Dev Stack Integration
+## Docker Integration
 
 ---
 
 ### TG-016 — Port assignment in `config/defaults.json`
 
-`config/defaults.json` shall gain a new entry under `"ports"`:
-
+Add to `"ports"`:
 ```json
 "telegram": 18002
 ```
 
-All references to the telegram bridge port in scripts and docs shall read from
-this file instead of hardcoding `18002`.
+---
+
+### TG-019 — Docker entrypoint and Dockerfile (primary deployment path)
+
+This is the **primary** way to run the bridge. It requires zero extra setup
+beyond the existing agent-canvas Docker image.
+
+**`docker/entrypoint.sh`** shall add a Service #4 block immediately after
+the automation server block and before the "wait for backends" block:
+
+```bash
+# ── 3b. Start Telegram Bridge (optional) ─────────────────────────────────────
+TELEGRAM_PORT="${TELEGRAM_PORT:-${CONFIG_TELEGRAM_PORT:-18002}}"
+if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+  log "Starting Telegram bridge on port $TELEGRAM_PORT..."
+  openhands-telegram-bridge \
+    --port "$TELEGRAM_PORT" &
+  PIDS+=($!)
+  log "Telegram bridge started (mode: ${TELEGRAM_WEBHOOK_URL:+webhook}${TELEGRAM_WEBHOOK_URL:-polling})"
+else
+  log "TELEGRAM_BOT_TOKEN not set — Telegram bridge disabled."
+  log "To enable: docker run -e TELEGRAM_BOT_TOKEN=<token> ..."
+fi
+```
+
+The bridge process shall inherit:
+- `AGENT_SERVER_URL=http://127.0.0.1:${AGENT_SERVER_PORT}`
+- `SESSION_API_KEY` (already exported by the entrypoint)
+- `OPENHANDS_API_KEY` (pass-through from environment, enables cloud mode)
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_CHAT_ID`, `TELEGRAM_WEBHOOK_URL`,
+  `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_PORT`, `TELEGRAM_DB_PATH`
+
+**`docker/Dockerfile`** shall install the bridge package in the build stage:
+```dockerfile
+COPY telegram/ /opt/agent-canvas/telegram/
+RUN pip install /opt/agent-canvas/telegram/
+```
+The `openhands-telegram-bridge` binary must be on `PATH` in the final image.
+
+**`config/defaults.json`** must export `CONFIG_TELEGRAM_PORT` via the
+`config-gen` build step (same pattern as `CONFIG_AGENT_SERVER_PORT`).
 
 ---
 
 ### TG-017 — `scripts/dev-with-telegram.mjs`
 
-A new launcher script `scripts/dev-with-telegram.mjs` shall start the full
-dev stack **plus** the telegram bridge. It shall:
+A new launcher script for local development (non-Docker). Extends
+`dev-with-automation.mjs` to also start the bridge via uvx:
 
-1. Import and reuse all helpers from `scripts/dev-safe.mjs` and
-   `scripts/dev-with-automation.mjs`.
-2. Read `ports.telegram` from `config/defaults.json`.
-3. Start the automation backend (identical to `dev-with-automation.mjs`).
-4. Start the telegram bridge via:
-   ```
-   uvx --from ./telegram openhands-telegram-bridge
-   ```
-   with environment variables:
-   ```
-   AGENT_SERVER_URL=http://localhost:{agentServerPort}
-   SESSION_API_KEY={sessionApiKey}
-   TELEGRAM_BOT_TOKEN={TELEGRAM_BOT_TOKEN from process.env}
-   TELEGRAM_WEBHOOK_URL={TELEGRAM_WEBHOOK_URL from process.env, may be empty}
-   TELEGRAM_PORT={telegramPort}
-   OPENHANDS_WORKING_DIR={workingDir}
-   ```
-5. If `TELEGRAM_BOT_TOKEN` is not set in the environment, print a clear
-   one-time setup message and continue starting the rest of the stack without
-   the bridge. Do **not** hard-fail if the token is missing — the rest of the
-   stack should run normally.
-6. Add a `telegram` entry to the `VITE_RUNTIME_SERVICES_INFO` block so agents
-   know the bridge is reachable:
-   ```json
-   "telegram": {
-     "description": "Telegram bridge. Forwards Telegram messages to/from this agent-server.",
-     "url_from_agent": "http://localhost:{telegramPort}",
-     "api_prefix": "/telegram"
-   }
-   ```
-7. Log the bridge URL and mode (polling/webhook) at startup.
-8. Add a `package.json` script:
-   ```json
-   "dev:telegram": "node scripts/dev-with-telegram.mjs"
-   ```
+```bash
+uvx --from ./telegram openhands-telegram-bridge
+```
+
+Env vars passed: `AGENT_SERVER_URL`, `SESSION_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_WEBHOOK_URL`, `TELEGRAM_PORT`, `OPENHANDS_WORKING_DIR`.
+
+If `TELEGRAM_BOT_TOKEN` is absent: print a setup message and start the rest
+of the stack normally. Do not fail.
+
+Add to `package.json`:
+```json
+"dev:telegram": "node scripts/dev-with-telegram.mjs"
+```
+
+---
+
+### TG-020 — Ingress proxy routing
+
+`scripts/ingress.mjs` shall add when the bridge is running:
+```
+/telegram/*  →  http://localhost:{telegramPort}
+```
+
+This lets webhook mode work through the unified ingress URL
+(`https://your-domain.com/telegram/webhook`).
 
 ---
 
 ### TG-018 — `.env.sample` additions
 
-`.env.sample` shall gain the following new entries in a `# Telegram Bridge`
-section:
-
 ```bash
-# Telegram Bridge
-# Get your token from @BotFather on Telegram: https://t.me/BotFather
+# ── Telegram Bridge ─────────────────────────────────────────────────────────
+# 1. Create a bot: message @BotFather on Telegram → /newbot → copy the token
 TELEGRAM_BOT_TOKEN=
 
-# Set to your full public HTTPS URL for webhook mode (leave blank for polling mode)
-# Example: https://your-domain.com
-# Leave blank for local development (polling mode used automatically)
+# 2. Your Telegram user ID (optional — first person to message the bot becomes
+#    the owner automatically if this is blank).
+#    Find yours by messaging @userinfobot on Telegram.
+TELEGRAM_OWNER_CHAT_ID=
+
+# 3. Cloud mode (optional — for always-on conversations):
+#    Set your OpenHands Cloud API key. Leave blank to use the local agent-server.
+OPENHANDS_API_KEY=
+
+# 4. Webhook URL (optional — leave blank for polling mode, which works locally
+#    with no public URL or port-forwarding needed).
 TELEGRAM_WEBHOOK_URL=
-
-# Optional: secret token for webhook signature verification (recommended for production)
-TELEGRAM_WEBHOOK_SECRET=
 ```
-
----
-
-### TG-019 — Docker support
-
-`docker/entrypoint.sh` shall:
-
-1. Conditionally start the telegram bridge if `TELEGRAM_BOT_TOKEN` is non-empty:
-   ```bash
-   if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
-     openhands-telegram-bridge &
-     log "Telegram bridge started (port ${TELEGRAM_PORT:-18002})"
-   fi
-   ```
-2. Pass `AGENT_SERVER_URL=http://localhost:18000` and `SESSION_API_KEY` to the
-   bridge process.
-
-`docker/Dockerfile` shall install the telegram bridge package in the image build
-via `pip install ./telegram` (local editable) or equivalent `uv pip install`.
-The installed `openhands-telegram-bridge` binary shall be on `PATH`.
-
----
-
-### TG-020 — Ingress proxy routing for webhook
-
-`scripts/ingress.mjs` (the standalone ingress proxy used by dev launchers)
-shall add a routing rule when the telegram bridge is running:
-
-```
-/telegram/*  →  http://localhost:{telegramPort}
-```
-
-This allows Telegram to call the webhook via the unified ingress entry point
-(e.g. `https://your-domain.com/telegram/webhook`) rather than requiring a
-separate public URL for the bridge port.
 
 ---
 
 ## Frontend Settings
 
----
-
-### TG-021 — Settings route: `src/routes/telegram-settings.tsx`
-
-A new route `/settings/telegram` shall render a settings page for the Telegram
-integration. The page shall:
-
-- Display a header: `SETTINGS$NAV_TELEGRAM` i18n key (value: `"Telegram"`).
-- Contain a single input field for `TELEGRAM_BOT_TOKEN` (password/masked type).
-- Show save/cancel buttons consistent with the other settings pages.
-- Save the token via `PUT /api/settings/secrets` with name `TELEGRAM_BOT_TOKEN`
-  (using the existing `SecretsService`).
-- Read the stored token via `GET /api/settings/secrets/TELEGRAM_BOT_TOKEN` on
-  page load (display the masked value from the server response).
+The Telegram integration lives under **Settings → Integrations**, alongside
+any future integrations (Slack, Discord, etc.). It does NOT get its own
+top-level nav item.
 
 ---
 
-### TG-022 — Telegram nav item in settings sidebar
+### TG-021 — Settings page
 
-`src/hooks/use-settings-nav-items.ts` shall add a new nav entry for
-`/settings/telegram` with:
+`src/routes/telegram-settings.tsx` shall render the Telegram settings page at
+`/settings/integrations/telegram`.
 
-- Icon: use the `MessageSquare` icon (or equivalent from the existing icon set).
+**Layout:**
+
+1. **Header**: `SETTINGS$TELEGRAM_TITLE` (`"Telegram Integration"`)
+2. **Bot Token field**: masked input, label `SETTINGS$TELEGRAM_TOKEN_LABEL`.
+   Help text: `SETTINGS$TELEGRAM_TOKEN_HELP` with a link to
+   `https://t.me/BotFather`.
+   Saved via `SecretsService` key `TELEGRAM_BOT_TOKEN`.
+3. **Owner Chat ID field**: plain text input, label
+   `SETTINGS$TELEGRAM_OWNER_LABEL`. Optional. Explain: *"Leave blank — the
+   first person to message the bot is set as the owner automatically."*
+4. **Connection status badge** (TG-023).
+5. **How it works** section — one paragraph explaining:
+   - Polling mode means no public URL needed.
+   - Conversations appear in the Agent Canvas UI too.
+   - `/new` command resets the conversation.
+6. **Cloud mode notice**: if `OPENHANDS_API_KEY` is detected in settings,
+   show *"☁️ Cloud mode active — conversations persist when the server is
+   offline."*
+
+---
+
+### TG-022 — Integrations nav section
+
+The Settings sidebar shall have an **Integrations** group (or reuse one if
+it already exists) containing a `Telegram` entry at
+`/settings/integrations/telegram`.
+
+- Icon: `MessageSquare` or the nearest available equivalent.
 - Label: `I18nKey.SETTINGS$NAV_TELEGRAM`.
-- Position: below "Secrets" in the nav list.
-
-The nav item shall be visible only when the app is running in local (non-cloud)
-mode, consistent with other local-only settings entries.
+- Visible in local mode only (non-cloud), consistent with other
+  local-only settings entries.
 
 ---
 
-### TG-023 — Connection status display
+### TG-023 — Connection status badge
 
-The Telegram settings page shall display a connection status indicator by
-calling `GET /health` on the bridge URL
-(`http://localhost:{TELEGRAM_PORT}/health`). This request shall:
+The settings page shall poll `GET http://localhost:{TELEGRAM_PORT}/health`
+every 5 seconds (React Query, no retry on 404) and render:
 
-- Show a green dot + `"Bridge running (polling)"` or `"Bridge running (webhook)"`.
-- Show a red dot + `"Bridge not running — start with npm run dev:telegram"` when
-  the health endpoint is unreachable.
-- Use a 5-second poll interval (standard React Query refetch).
+| Bridge response | Display |
+|---|---|
+| `{status:"ok", mode:"polling"}` | 🟢 `SETTINGS$TELEGRAM_STATUS_RUNNING_POLLING` |
+| `{status:"ok", mode:"webhook"}` | 🟢 `SETTINGS$TELEGRAM_STATUS_RUNNING_WEBHOOK` |
+| Unreachable | 🔴 `SETTINGS$TELEGRAM_STATUS_NOT_RUNNING` |
 
 ---
 
 ### TG-024 — i18n keys
 
-The following keys shall be added to `src/i18n/translation.json` with English
-values as shown. All 15 supported languages shall receive the English fallback
-as their initial value (standard practice for new keys).
+Add to `src/i18n/translation.json`. All 15 languages receive the English value
+as fallback initially. Run `npm run make-i18n` after adding.
 
 | Key | English value |
 |---|---|
 | `SETTINGS$NAV_TELEGRAM` | `"Telegram"` |
 | `SETTINGS$TELEGRAM_TITLE` | `"Telegram Integration"` |
 | `SETTINGS$TELEGRAM_TOKEN_LABEL` | `"Bot Token"` |
-| `SETTINGS$TELEGRAM_TOKEN_HELP` | `"Create a bot with @BotFather on Telegram to get your token."` |
-| `SETTINGS$TELEGRAM_STATUS_RUNNING_POLLING` | `"Bridge running (polling mode)"` |
-| `SETTINGS$TELEGRAM_STATUS_RUNNING_WEBHOOK` | `"Bridge running (webhook mode)"` |
-| `SETTINGS$TELEGRAM_STATUS_NOT_RUNNING` | `"Bridge not running — start with npm run dev:telegram"` |
-| `SETTINGS$TELEGRAM_SAVE_SUCCESS` | `"Bot token saved."` |
-
-After adding the keys, run `npm run make-i18n` to regenerate
-`src/i18n/declaration.ts` and the locale JSON files.
+| `SETTINGS$TELEGRAM_TOKEN_HELP` | `"Get your token from @BotFather on Telegram."` |
+| `SETTINGS$TELEGRAM_OWNER_LABEL` | `"Your Telegram Chat ID (optional)"` |
+| `SETTINGS$TELEGRAM_OWNER_HELP` | `"Leave blank — the first person to message the bot becomes the owner automatically. Find your ID by messaging @userinfobot."` |
+| `SETTINGS$TELEGRAM_STATUS_RUNNING_POLLING` | `"Bridge running · polling mode"` |
+| `SETTINGS$TELEGRAM_STATUS_RUNNING_WEBHOOK` | `"Bridge running · webhook mode"` |
+| `SETTINGS$TELEGRAM_STATUS_NOT_RUNNING` | `"Bridge not running"` |
+| `SETTINGS$TELEGRAM_CLOUD_ACTIVE` | `"☁️ Cloud mode active — conversations persist when the server is offline."` |
+| `SETTINGS$TELEGRAM_SAVE_SUCCESS` | `"Telegram settings saved."` |
 
 ---
 
-## `telegram/README.md` Content
+### TG-028 — `telegram/README.md`
 
-The `telegram/README.md` shall include:
+The README is the user-facing setup guide. It must be clear enough for a
+non-developer who has Docker and a Telegram account.
 
-1. **Prerequisites**: Python ≥ 3.11, `uv`, a Telegram account.
-2. **Step 1 — Create a bot**: Exact instructions for messaging @BotFather, getting the token.
-3. **Step 2 — Configure**: Set `TELEGRAM_BOT_TOKEN=...` in `.env`.
-4. **Step 3 — Run**:
+**Sections:**
+
+1. **What this is**: *"Chat with your Agent Canvas agent from any Telegram
+   client. Uses the same agent, same LLM, same conversation history as the
+   browser UI."*
+
+2. **Prerequisites**: Telegram account only. Nothing else to install.
+
+3. **Step 1 — Create your bot (2 minutes)**:
+   - Open Telegram, search for `@BotFather`
+   - Send `/newbot`
+   - Choose a name and username
+   - Copy the token (looks like `1234567890:ABCdef...`)
+
+4. **Step 2 — Run (one command)**:
    ```bash
-   # With the full dev stack:
-   npm run dev:telegram
-
-   # Bridge only (agent-server must already be running):
-   cd telegram && uv run python -m bridge
+   docker run -e TELEGRAM_BOT_TOKEN=<your_token> -p 8000:8000 \
+     ghcr.io/openhands/agent-canvas
    ```
-5. **Webhook for production**: Instructions for setting `TELEGRAM_WEBHOOK_URL` and running behind an HTTPS reverse proxy.
-6. **Commands available**: `/start`, `/new`.
-7. **Troubleshooting**: Common errors (wrong token, agent unreachable, webhook cert issues).
+   Open Telegram, find your bot by its username, send `/start`. Done.
+
+5. **Step 3 — Always-on with OpenHands Cloud**:
+   ```bash
+   docker run -e TELEGRAM_BOT_TOKEN=<token> \
+              -e OPENHANDS_API_KEY=<cloud_key> \
+              -p 8000:8000 \
+              ghcr.io/openhands/agent-canvas
+   ```
+   Conversations persist in the cloud even when the container stops.
+
+6. **How ownership works**: First message → you are the owner. All other
+   Telegram users are silently ignored. To pre-configure: set
+   `TELEGRAM_OWNER_CHAT_ID` (find your ID by messaging `@userinfobot`).
+
+7. **Commands**:
+   - `/start` — shows status, prompts for first message
+   - `/new` — resets to a fresh conversation
+
+8. **Your conversation in the browser too**: Every Telegram message creates
+   or continues a real Agent Canvas conversation. Open
+   `http://localhost:8000` (local) or `app.all-hands.dev` (cloud) and you
+   will see the same conversation history. You can pick up mid-task in
+   either place.
+
+9. **Troubleshooting**:
+   - *Bot does not respond*: Check `TELEGRAM_BOT_TOKEN` is correct. Run
+     `docker logs <container>` and look for `[telegram]` lines.
+   - *"Agent server isn't reachable"*: The container is still starting.
+     Wait 10–15 seconds.
+   - *Wrong cloud key*: Set `OPENHANDS_API_KEY` correctly or unset it to
+     fall back to local mode.
 
 ---
 
-## Implementation Checklist (for OpenHands)
+## Out of scope for this spec
+
+The following are explicitly deferred to future specs:
+
+- **Automation notifications via Telegram**: automations sending a DM when
+  they complete. This is a separate notification feature, not part of the
+  bridge.
+- **Multiple conversations via Telegram**: threading, channels, or group
+  chats for parallel agent sessions. Phase 1 is one conversation per owner.
+- **Media input**: photos, voice notes, files sent to the bot. Phase 1 is
+  text only.
+- **Inline keyboard buttons** or rich Telegram UI components.
+
+---
+
+## Implementation Checklist
 
 Work in the `20260527-telegram` branch of `jamiechicago312/agent-canvas`.
+Complete items in order — later items depend on earlier ones.
 
-- [ ] **TG-001** `telegram/pyproject.toml` and package scaffolding
-- [ ] **TG-002** `bridge/config.py` — env var config with startup validation
-- [ ] **TG-003** `bridge/session.py` — SQLite session store
-- [ ] **TG-004** `bridge/app.py` — webhook endpoint + health route
-- [ ] **TG-005** Polling mode (no-webhook dev path) in `__main__.py`
-- [ ] **TG-006** `bridge/handlers.py` — inbound message handler
-- [ ] **TG-007** `bridge/agent_client.py` — `create_conversation()`
-- [ ] **TG-008** `bridge/agent_client.py` — `send_message()`
+**Python service**
+- [ ] **TG-001** `telegram/pyproject.toml` + package skeleton
+- [ ] **TG-002** `bridge/config.py` — env vars, startup validation, mode logging
+- [ ] **TG-003** `bridge/session.py` — SQLite store with owner table
+- [ ] **TG-025** Owner gate in session store + handler guard
+- [ ] **TG-004** `bridge/app.py` — webhook endpoint + `/health`
+- [ ] **TG-005** Polling mode as default in `bridge/__main__.py`
+- [ ] **TG-026** `bridge/agent_client.py` — local + cloud `create_conversation()`
+- [ ] **TG-008** `bridge/agent_client.py` — local + cloud `send_message()`
 - [ ] **TG-009** `bridge/agent_client.py` — `wait_for_response()`
-- [ ] **TG-010** Typing indicator keep-alive loop
-- [ ] **TG-011** Long message splitting helper
-- [ ] **TG-012** `/start` and `/new` command handlers
-- [ ] **TG-013** Error handling + user-facing messages
-- [ ] **TG-014** Graceful shutdown on SIGTERM/SIGINT
-- [ ] **TG-015** Session API key auth on all agent-server calls
-- [ ] **TG-016** `config/defaults.json` — add `ports.telegram`
+- [ ] **TG-015** Auth headers on all agent-server calls
+- [ ] **TG-006** `bridge/handlers.py` — message handler (owner gate + full flow)
+- [ ] **TG-012** `/start` and `/new` handlers
+- [ ] **TG-010** Typing indicator keep-alive
+- [ ] **TG-011** Long message splitting
+- [ ] **TG-013** Error handling + user messages
+- [ ] **TG-014** Graceful shutdown
+
+**Docker + config**
+- [ ] **TG-016** `config/defaults.json` — add `ports.telegram: 18002`
+- [ ] **TG-019** `docker/Dockerfile` — `pip install ./telegram/`
+- [ ] **TG-019** `docker/entrypoint.sh` — Service #4 block
+
+**Dev stack**
 - [ ] **TG-017** `scripts/dev-with-telegram.mjs` + `package.json` script
+- [ ] **TG-020** `scripts/ingress.mjs` — `/telegram/*` routing
 - [ ] **TG-018** `.env.sample` additions
-- [ ] **TG-019** Docker `entrypoint.sh` + `Dockerfile` changes
-- [ ] **TG-020** Ingress proxy routing rule for `/telegram/*`
-- [ ] **TG-021** `src/routes/telegram-settings.tsx`
-- [ ] **TG-022** Nav item in `use-settings-nav-items.ts`
-- [ ] **TG-023** Connection status polling on settings page
-- [ ] **TG-024** i18n keys + `npm run make-i18n`
-- [ ] **README** `telegram/README.md`
+
+**Frontend**
+- [ ] **TG-024** `src/i18n/translation.json` keys + `npm run make-i18n`
+- [ ] **TG-022** Integrations nav section in settings sidebar
+- [ ] **TG-021** `src/routes/telegram-settings.tsx` settings page
+- [ ] **TG-023** Connection status badge + React Query poll
+
+**Docs**
+- [ ] **TG-028** `telegram/README.md`
