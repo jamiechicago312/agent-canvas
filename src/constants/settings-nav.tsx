@@ -1,4 +1,4 @@
-import { AppWindow, Shield } from "lucide-react";
+import { AppWindow, MessageCircle, Shield } from "lucide-react";
 import KeyIcon from "#/icons/key.svg?react";
 import MemoryIcon from "#/icons/memory_icon.svg?react";
 import CircuitIcon from "#/icons/u-circuit.svg?react";
@@ -60,3 +60,10 @@ export const OSS_NAV_ITEMS: SettingsNavItem[] = [
     subtitle: "SETTINGS$PAGE_SECRETS_SUBLINE",
   },
 ];
+
+export const TELEGRAM_SETTINGS_NAV_ITEM: SettingsNavItem = {
+  icon: <MessageCircle className="size-4" strokeWidth={2} aria-hidden />,
+  to: "/settings/integrations/telegram",
+  text: "SETTINGS$NAV_TELEGRAM",
+  subtitle: "SETTINGS$PAGE_TELEGRAM_SUBLINE",
+};

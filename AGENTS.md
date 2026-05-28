@@ -17,6 +17,12 @@
 - Default working-dir fallback is now the relative path `workspace/project` (exported as `DEFAULT_WORKING_DIR` from `src/api/agent-server-config.ts`); git-path heuristics and the default PLAN preview path should reuse that constant instead of hardcoding `/workspace/project`.
 - The UI keeps most OpenHands routes/layout intact, but hosted-only behavior (org, account management, integrations) has been removed via the fabricated OSS config because there is no separate app backend.
 - Verification command: `npm run typecheck && npm run build`.
+- Local Telegram integration lives under `telegram/` as a small FastAPI bridge package (`openhands-telegram-bridge`). `npm run dev` now starts it alongside agent-server and automation on port `18002`, and the ingress/static proxy forward `/api/integrations/telegram/*` plus `/telegram/webhook` to that bridge.
+- The Telegram UI entry is intentionally under `Settings → Integrations → Telegram` rather than `Customize`. Frontend pieces are `src/routes/telegram-settings.tsx`, `src/api/telegram-integration-service.ts`, `src/constants/settings-nav.tsx`, and `src/hooks/use-settings-nav-items.ts`.
+- Telegram config persistence is split: non-secret fields live in `settings.agent_settings.telegram_integration`, while the bot token is stored as the `TELEGRAM_BOT_TOKEN` secret.
+- For Telegram-related frontend changes, regenerate i18n with `npm run make-i18n` before typechecking; `src/i18n/declaration.ts` is generated, not committed.
+- Current verification for Telegram work: `npm run make-i18n && npm run typecheck && python3 -m compileall telegram/src/openhands_telegram_bridge`.
+
 - GitHub automation now includes `.github/workflows/ci.yml` for `npm ci`, `npm test`, and `npm run build`, plus `.github/dependabot.yml` with weekly npm/github-actions updates gated by a 7-day cooldown.
 
 ## Runtime Services in Dev Stacks

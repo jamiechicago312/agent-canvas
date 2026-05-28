@@ -27,10 +27,6 @@ export function SettingsDesktopSidebar({
   navigationItems,
 }: Pick<SettingsNavigationProps, "navigationItems">) {
   const { t } = useTranslation("openhands");
-  const desktopNavItems = navigationItems.filter(
-    (item): item is Extract<SettingsNavRenderedItem, { type: "item" }> =>
-      item.type === "item",
-  );
 
   return (
     <aside
@@ -44,31 +40,45 @@ export function SettingsDesktopSidebar({
         {t(I18nKey.SETTINGS$TITLE)}
       </Typography.Text>
       <div className="flex flex-col gap-0.5 pt-0.5">
-        {desktopNavItems.map((renderedItem) => (
-          <SidebarNavLink
-            key={renderedItem.item.to}
-            to={renderedItem.item.to}
-            label={t(renderedItem.item.text as I18nKey)}
-            end
-            testId={`sidebar-settings-${renderedItem.item.to}`}
-            icon={renderedItem.item.icon}
-            // Items marked ``disabledByAcp`` (LLM, Condenser, …) are greyed
-            // out and un-clickable while an ACP agent is active — those
-            // pages have nothing to configure while a separate sub-agent
-            // owns the LLM/condenser/MCP layers. The mobile drawer below
-            // already does this via ``SettingsNavLink``; do the same on
-            // desktop. The clientLoader-side redirect in ``routes/
-            // settings.tsx`` handles direct URL navigation.
-            disabled={renderedItem.disabled}
-            disabledReason={
-              renderedItem.disabled && renderedItem.disabledAgentName
-                ? t(I18nKey.SETTINGS$AGENT_DISABLED_TOOLTIP, {
-                    agentName: renderedItem.disabledAgentName,
-                  })
-                : undefined
-            }
-          />
-        ))}
+        {navigationItems.map((renderedItem, index) => {
+          if (renderedItem.type === "header") {
+            return (
+              <SettingsNavHeader
+                key={`desktop-header-${renderedItem.text}`}
+                text={renderedItem.text}
+                className={cn(index === 0 ? "pt-0" : "pt-4", "pb-1")}
+              />
+            );
+          }
+
+          if (renderedItem.type === "divider") {
+            return (
+              <SettingsNavDivider
+                key={`desktop-divider-${index}`}
+                className="my-3"
+              />
+            );
+          }
+
+          return (
+            <SidebarNavLink
+              key={renderedItem.item.to}
+              to={renderedItem.item.to}
+              label={t(renderedItem.item.text as I18nKey)}
+              end
+              testId={`sidebar-settings-${renderedItem.item.to}`}
+              icon={renderedItem.item.icon}
+              disabled={renderedItem.disabled}
+              disabledReason={
+                renderedItem.disabled && renderedItem.disabledAgentName
+                  ? t(I18nKey.SETTINGS$AGENT_DISABLED_TOOLTIP, {
+                      agentName: renderedItem.disabledAgentName,
+                    })
+                  : undefined
+              }
+            />
+          );
+        })}
       </div>
       <div className="px-2 pt-3">
         <BackendSyncedSettingsBadge />

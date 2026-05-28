@@ -29,6 +29,7 @@ export default [
       route("mcp", "routes/mcp-settings-redirect.tsx"),
       route("app", "routes/app-settings.tsx"),
       route("secrets", "routes/secrets-settings.tsx"),
+      route("integrations/telegram", "routes/telegram-settings.tsx"),
     ]),
     route("oauth/device/verify", "routes/device-verify.tsx"),
     route("automations", "routes/automations-list.tsx"),

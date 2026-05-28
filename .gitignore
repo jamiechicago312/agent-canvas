@@ -9,6 +9,8 @@ logs/
 /.tmp/live-e2e-state/
 dist/
 __pycache__
+*.egg-info/
+
 
 
 /test-results/

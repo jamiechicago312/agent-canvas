@@ -15,6 +15,7 @@
   "ports": {
     "agentServer": 18000,
     "automation": 18001,
+    "telegram": 18002,
     "proxy": 8000
   },
 

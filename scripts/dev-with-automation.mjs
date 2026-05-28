@@ -85,6 +85,7 @@ const DEFAULT_AUTOMATION_VERSION = SHARED_DEFAULTS.versions.automation;
 const DEFAULT_AUTOMATION_SDK_VERSION = SHARED_DEFAULTS.versions.automationSdk;
 const DEFAULT_BACKEND_PORT = SHARED_DEFAULTS.ports.agentServer;
 const DEFAULT_AUTOMATION_PORT = SHARED_DEFAULTS.ports.automation;
+const DEFAULT_TELEGRAM_PORT = SHARED_DEFAULTS.ports.telegram;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Terminal Styling
@@ -285,6 +286,7 @@ async function buildConfig(args, env = process.env) {
   const preferredIngressPort = args.port || parseInt(env.PORT, 10) || 8000;
   const preferredBackendPort = DEFAULT_BACKEND_PORT;
   const preferredAutomationPort = DEFAULT_AUTOMATION_PORT;
+  const preferredTelegramPort = DEFAULT_TELEGRAM_PORT;
   const preferredVitePort = 3001;
 
   // Find available ports, preferring the defaults
@@ -293,6 +295,7 @@ async function buildConfig(args, env = process.env) {
     { name: "ingress", preferred: preferredIngressPort },
     { name: "backend", preferred: preferredBackendPort },
     { name: "automation", preferred: preferredAutomationPort },
+    { name: "telegram", preferred: preferredTelegramPort },
     { name: "vite", preferred: preferredVitePort },
   ]);
 
@@ -315,6 +318,13 @@ async function buildConfig(args, env = process.env) {
     logService(
       "ports",
       `Port ${preferredAutomationPort} busy, using ${ports.automation} for automation`,
+      c.yellow,
+    );
+  }
+  if (ports.telegram !== preferredTelegramPort) {
+    logService(
+      "ports",
+      `Port ${preferredTelegramPort} busy, using ${ports.telegram} for telegram`,
       c.yellow,
     );
   }
@@ -346,6 +356,7 @@ async function buildConfig(args, env = process.env) {
     // Service ports (internal)
     agentServerPort: ports.backend,
     autoBackendPort: ports.automation,
+    telegramPort: ports.telegram,
     vitePort: ports.vite,
     vscodePort,
 
@@ -680,6 +691,34 @@ function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
+
+function startTelegramBridge(config) {
+  logService(
+    "telegram",
+    `Starting on port ${config.telegramPort}...`,
+    c.cyan,
+  );
+
+  spawnService(
+    "telegram",
+    "uvx",
+    ["--from", "./telegram", "openhands-telegram-bridge"],
+    {
+      cwd: config.canvasPath,
+      env: {
+        AGENT_SERVER_URL: `http://localhost:${config.agentServerPort}`,
+        SESSION_API_KEY: config.sessionApiKey,
+        TELEGRAM_PORT: config.telegramPort.toString(),
+        TELEGRAM_DB_PATH: join(config.stateDir, "telegram.db"),
+        OPENHANDS_WORKING_DIR:
+          config.viteWorkingDir ?? join(config.stateDir, "workspaces"),
+        PYTHONUTF8: "1",
+      },
+      color: c.cyan,
+    },
+  );
+}
+
 function startIngress(config) {
   logService("ingress", `Starting on port ${config.ingressPort}...`, c.yellow);
 
@@ -694,6 +733,10 @@ function startIngress(config) {
       config.ingressPort.toString(),
       "--route",
       `/api/automation=http://localhost:${config.autoBackendPort}`,
+      "--route",
+      `/api/integrations/telegram=http://localhost:${config.telegramPort}`,
+      "--route",
+      `/telegram=http://localhost:${config.telegramPort}`,
       "--route",
       `/api=http://localhost:${config.agentServerPort}`,
       "--route",
@@ -891,6 +934,11 @@ function printBanner(config) {
     ) + `${c.green}${c.bold}║${c.reset}`,
   );
   console.log(
+    `${c.green}${c.bold}║${c.reset}  Telegram:     ${c.cyan}Settings → Integrations → Telegram${c.reset}`.padEnd(
+      75,
+    ) + `${c.green}${c.bold}║${c.reset}`,
+  );
+  console.log(
     `${c.green}${c.bold}║${c.reset}                                                              ${c.green}${c.bold}║${c.reset}`,
   );
   console.log(
@@ -1029,17 +1077,25 @@ async function main(options = {}) {
   // 3. Start automation backend
   startAutomationBackend(config);
 
-  // 4. Start frontend server (Vite dev server OR static server)
+  // 4. Start Telegram bridge service
+  startTelegramBridge(config);
+
+  // 5. Start frontend server (Vite dev server OR static server)
   if (useStaticMode) {
     startStaticFrontend(config, staticDir);
   } else {
     startVite(config);
   }
 
-  // 5. Wait for services to be ready
+  // 6. Wait for services to be ready
   await delay(2000);
+  await waitForService(
+    "telegram",
+    `http://localhost:${config.telegramPort}/health`,
+    30000,
+  );
 
-  // 6. Start ingress proxy (routes traffic to all backends)
+  // 7. Start ingress proxy (routes traffic to all backends)
   startIngress(config);
 
   // Wait for ingress to start
@@ -1073,6 +1129,10 @@ function startStaticFrontend(config, staticDir) {
       // Proxy routes to backends (same as ingress but for direct access to vitePort)
       "--route",
       `/api/automation=http://localhost:${config.autoBackendPort}`,
+      "--route",
+      `/api/integrations/telegram=http://localhost:${config.telegramPort}`,
+      "--route",
+      `/telegram=http://localhost:${config.telegramPort}`,
       "--route",
       `/api=http://localhost:${config.agentServerPort}`,
       "--route",

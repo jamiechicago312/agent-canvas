@@ -1,6 +1,10 @@
 import { useConfig } from "#/hooks/query/use-config";
 import { useSettings } from "#/hooks/query/use-settings";
-import { OSS_NAV_ITEMS, SettingsNavItem } from "#/constants/settings-nav";
+import {
+  OSS_NAV_ITEMS,
+  SettingsNavItem,
+  TELEGRAM_SETTINGS_NAV_ITEM,
+} from "#/constants/settings-nav";
 import { ACP_PROVIDERS } from "#/constants/acp-providers";
 import { isSettingsPageHidden } from "#/utils/settings-utils";
 import { I18nKey } from "#/i18n/declaration";
@@ -33,13 +37,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
       "ACP Agent")
     : undefined;
 
-  return OSS_NAV_ITEMS.filter(
-    (item) => !isSettingsPageHidden(item.to, featureFlags),
-  ).map((item) => {
-    // Local backends present "LLM Profiles" as the section name + subtitle
-    // for the ``/settings`` entry; cloud backends keep the canonical "LLM".
-    // Apply the rename before the ACP disable check so the disabled tooltip
-    // still names the visible label, not a stale one.
+  const renderItem = (item: SettingsNavItem): SettingsNavRenderedItem => {
     const renamedItem =
       item.to === "/settings"
         ? {
@@ -63,6 +61,30 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
         disabledAgentName: acpServerName,
       };
     }
+
     return { type: "item", item: renamedItem };
-  });
+  };
+
+  const coreItems = OSS_NAV_ITEMS.filter(
+    (item) => !isSettingsPageHidden(item.to, featureFlags),
+  ).map(renderItem);
+
+  if (backend.kind !== "local") {
+    return coreItems;
+  }
+
+  const integrationItems = [TELEGRAM_SETTINGS_NAV_ITEM]
+    .filter((item) => !isSettingsPageHidden(item.to, featureFlags))
+    .map(renderItem);
+
+  if (integrationItems.length === 0) {
+    return coreItems;
+  }
+
+  return [
+    ...coreItems,
+    { type: "divider" },
+    { type: "header", text: I18nKey.SETTINGS$NAV_INTEGRATIONS },
+    ...integrationItems,
+  ];
 }
