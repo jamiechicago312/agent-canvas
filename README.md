@@ -64,7 +64,22 @@ docker run -it --rm \
   ghcr.io/openhands/agent-canvas:1.0.0-alpha.6
 ```
 
-The agent will be able to access any project under `PROJECTS_PATH`.
+PowerShell:
+
+```powershell
+docker pull ghcr.io/openhands/agent-canvas:1.0.0-alpha.6
+
+$projectsPath = Join-Path $HOME "projects"  # directory containing your project folders
+$statePath = Join-Path $HOME ".openhands"
+
+docker run -it --rm `
+  -p 8000:8000 `
+  -v "${statePath}:/home/openhands/.openhands" `
+  -v "${projectsPath}:/projects" `
+  ghcr.io/openhands/agent-canvas:1.0.0-alpha.6
+```
+
+The agent will be able to access any project under `PROJECTS_PATH` / `$projectsPath`.
 
 
 
@@ -75,6 +90,15 @@ The agent will be able to access any project under `PROJECTS_PATH`.
 ```sh
 git clone https://github.com/OpenHands/agent-canvas.git
 cd agent-canvas
+npm install
+npm run dev
+```
+
+PowerShell:
+
+```powershell
+git clone https://github.com/OpenHands/agent-canvas.git
+Set-Location agent-canvas
 npm install
 npm run dev
 ```
@@ -100,4 +124,5 @@ The Agent Server is often paired with an [Automation Server](https://github.com/
 
 ## More documentation
 
-For contributor and developer workflows, including frontend-only mode, mock mode, environment variables, and build/test commands, see [DEVELOPMENT.md](./DEVELOPMENT.md).
+- For contributor and developer workflows, including frontend-only mode, mock mode, environment variables, and build/test commands, see [DEVELOPMENT.md](./DEVELOPMENT.md).
+- Clean uninstall guides: [readme-uninstall-windows](./readme-uninstall-windows.md) and [readme-uninstall-mac](./readme-uninstall-mac.md).
