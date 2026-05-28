@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 
+from .config import TelegramIntegrationConfig
+
 
 class TelegramStateStore:
     def __init__(self, path: Path):
@@ -34,6 +36,32 @@ class TelegramStateStore:
         with self._connect() as conn:
             conn.execute("DELETE FROM state WHERE key = ?", (key,))
             conn.commit()
+
+    def get_telegram_config(self, token: str | None = None) -> TelegramIntegrationConfig:
+        mode = self.get("telegram.mode")
+        webhook_url = self.get("telegram.webhook_url")
+        owner_chat_id = self.get("telegram.owner_chat_id")
+        return TelegramIntegrationConfig(
+            enabled=self.get("telegram.enabled") == "1",
+            token=token,
+            owner_chat_id=owner_chat_id or None,
+            mode="webhook" if mode == "webhook" else "polling",
+            webhook_url=webhook_url or None,
+        )
+
+    def save_telegram_config(self, config: TelegramIntegrationConfig) -> None:
+        self.set("telegram.enabled", "1" if config.enabled else "0")
+        self.set("telegram.mode", config.mode)
+
+        if config.owner_chat_id:
+            self.set("telegram.owner_chat_id", config.owner_chat_id)
+        else:
+            self.delete("telegram.owner_chat_id")
+
+        if config.mode == "webhook" and config.webhook_url:
+            self.set("telegram.webhook_url", config.webhook_url)
+        else:
+            self.delete("telegram.webhook_url")
 
     def get_conversation_id(self) -> str | None:
         return self.get("conversation_id")

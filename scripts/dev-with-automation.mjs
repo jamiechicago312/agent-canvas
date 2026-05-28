@@ -701,8 +701,8 @@ function startTelegramBridge(config) {
 
   spawnService(
     "telegram",
-    "uvx",
-    ["--from", "./telegram", "openhands-telegram-bridge"],
+    "uv",
+    ["run", "--project", "./telegram", "--refresh", "openhands-telegram-bridge"],
     {
       cwd: config.canvasPath,
       env: {

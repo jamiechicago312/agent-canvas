@@ -19,7 +19,8 @@
 - Verification command: `npm run typecheck && npm run build`.
 - Local Telegram integration lives under `telegram/` as a small FastAPI bridge package (`openhands-telegram-bridge`). `npm run dev` now starts it alongside agent-server and automation on port `18002`, and the ingress/static proxy forward `/api/integrations/telegram/*` plus `/telegram/webhook` to that bridge.
 - The Telegram UI entry is intentionally under `Settings → Integrations → Telegram` rather than `Customize`. Frontend pieces are `src/routes/telegram-settings.tsx`, `src/api/telegram-integration-service.ts`, `src/constants/settings-nav.tsx`, and `src/hooks/use-settings-nav-items.ts`.
-- Telegram config persistence is split: non-secret fields live in `settings.agent_settings.telegram_integration`, while the bot token is stored as the `TELEGRAM_BOT_TOKEN` secret.
+- Telegram config persistence is bridge-local: non-secret fields are stored in the bridge SQLite state (`telegram/src/openhands_telegram_bridge/state_store.py`) and exposed via `/api/integrations/telegram/config`; the agent-server settings API silently drops unknown `agent_settings` keys like `telegram_integration`, so do not rely on `PATCH /api/settings` for this feature. The bot token still lives in the `TELEGRAM_BOT_TOKEN` secret on the agent-server.
+- `scripts/dev-with-automation.mjs` must launch the bridge with `uv run --project ./telegram ...` instead of `uvx --from ./telegram ...`; `uvx` can reuse a cached local package build and miss source edits to the bridge during iterative development.
 - For Telegram-related frontend changes, regenerate i18n with `npm run make-i18n` before typechecking; `src/i18n/declaration.ts` is generated, not committed.
 - Current verification for Telegram work: `npm run make-i18n && npm run typecheck && python3 -m compileall telegram/src/openhands_telegram_bridge`.
 

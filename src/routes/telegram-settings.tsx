@@ -9,17 +9,15 @@ import { SettingsInput } from "#/components/features/settings/settings-input";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { SecretsService } from "#/api/secrets-service";
 import {
+  getTelegramIntegrationConfig,
   getTelegramIntegrationStatus,
-  reloadTelegramIntegration,
+  saveTelegramIntegrationConfig,
+  TelegramIntegrationConfig,
   TelegramIntegrationMode,
   TelegramIntegrationStatus,
 } from "#/api/telegram-integration-service";
-import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
 import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
-import { SETTINGS_QUERY_KEYS } from "#/hooks/query/query-keys";
-import { useSettings } from "#/hooks/query/use-settings";
 import { I18nKey } from "#/i18n/declaration";
-import { Settings } from "#/types/settings";
 import {
   displayErrorToast,
   displaySuccessToast,
@@ -48,21 +46,16 @@ type TelegramSettingsValue = {
   webhookUrl: string;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function getTelegramSettings(settings?: Settings): TelegramSettingsValue {
-  const raw = settings?.agent_settings?.telegram_integration;
-  const telegram = isRecord(raw) ? raw : {};
-
+function getTelegramSettings(
+  config?: TelegramIntegrationConfig,
+): TelegramSettingsValue {
   return {
-    enabled: telegram.enabled === true,
+    enabled: config?.enabled === true,
     ownerChatId:
-      typeof telegram.owner_chat_id === "string" ? telegram.owner_chat_id : "",
-    mode: telegram.mode === "webhook" ? "webhook" : "polling",
+      typeof config?.owner_chat_id === "string" ? config.owner_chat_id : "",
+    mode: config?.mode === "webhook" ? "webhook" : "polling",
     webhookUrl:
-      typeof telegram.webhook_url === "string" ? telegram.webhook_url : "",
+      typeof config?.webhook_url === "string" ? config.webhook_url : "",
   };
 }
 
@@ -117,14 +110,25 @@ export default function TelegramSettingsScreen() {
   const { t } = useTranslation("openhands");
   const queryClient = useQueryClient();
   const { backend } = useActiveBackend();
-  const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: secrets = [], isLoading: secretsLoading } = useSearchSecrets();
-  const { mutateAsync: saveSettings, isPending: settingsPending } =
-    useSaveSettings();
+
+  const configQuery = useQuery({
+    queryKey: ["telegram-integration-config"],
+    queryFn: getTelegramIntegrationConfig,
+    retry: false,
+    enabled: backend.kind === "local",
+  });
+  const statusQuery = useQuery({
+    queryKey: TELEGRAM_STATUS_QUERY_KEY,
+    queryFn: getTelegramIntegrationStatus,
+    refetchInterval: 5000,
+    retry: false,
+    enabled: backend.kind === "local",
+  });
 
   const telegramSettings = React.useMemo(
-    () => getTelegramSettings(settings),
-    [settings],
+    () => getTelegramSettings(configQuery.data),
+    [configQuery.data],
   );
 
   const [formState, setFormState] = React.useState<TelegramFormState>({
@@ -137,14 +141,6 @@ export default function TelegramSettingsScreen() {
   const [tokenError, setTokenError] = React.useState<string | undefined>();
   const [webhookError, setWebhookError] = React.useState<string | undefined>();
   const [isSubmitting, setIsSubmitting] = React.useState(false);
-
-  const statusQuery = useQuery({
-    queryKey: TELEGRAM_STATUS_QUERY_KEY,
-    queryFn: getTelegramIntegrationStatus,
-    refetchInterval: 5000,
-    retry: false,
-    enabled: backend.kind === "local",
-  });
 
   React.useEffect(() => {
     setFormState((current) => ({
@@ -166,8 +162,8 @@ export default function TelegramSettingsScreen() {
   const status = statusQuery.data;
   const statusError =
     statusQuery.error instanceof Error ? statusQuery.error.message : null;
-  const isLoading = settingsLoading || secretsLoading;
-  const isBusy = isLoading || isSubmitting || settingsPending;
+  const isLoading = configQuery.isLoading || secretsLoading;
+  const isBusy = isLoading || isSubmitting;
   const formIsDirty =
     formState.enabled !== telegramSettings.enabled ||
     formState.ownerChatId !== telegramSettings.ownerChatId ||
@@ -216,23 +212,17 @@ export default function TelegramSettingsScreen() {
         );
       }
 
-      await saveSettings({
-        agent_settings_diff: {
-          telegram_integration: {
-            enabled: formState.enabled,
-            owner_chat_id: trimmedOwnerChatId || null,
-            mode: formState.mode,
-            webhook_url:
-              formState.mode === "webhook" ? trimmedWebhookUrl || null : null,
-          },
-        },
+      const nextStatus = await saveTelegramIntegrationConfig({
+        enabled: formState.enabled,
+        owner_chat_id: trimmedOwnerChatId || null,
+        mode: formState.mode,
+        webhook_url:
+          formState.mode === "webhook" ? trimmedWebhookUrl || null : null,
       });
-
-      await reloadTelegramIntegration();
 
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: SETTINGS_QUERY_KEYS.byScope("personal"),
+          queryKey: ["telegram-integration-config"],
         }),
         queryClient.invalidateQueries({ queryKey: ["secrets"] }),
         queryClient.invalidateQueries({ queryKey: TELEGRAM_STATUS_QUERY_KEY }),
@@ -241,6 +231,12 @@ export default function TelegramSettingsScreen() {
       setFormState((current) => ({ ...current, botToken: "" }));
       setTokenError(undefined);
       setWebhookError(undefined);
+
+      if (nextStatus.status === "error" && nextStatus.last_error) {
+        displayErrorToast(nextStatus.last_error);
+        return;
+      }
+
       displaySuccessToast(t(I18nKey.SETTINGS$TELEGRAM_SAVE_SUCCESS));
     } catch (error) {
       displayErrorToast(

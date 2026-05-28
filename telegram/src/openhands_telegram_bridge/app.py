@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, status
+from pydantic import BaseModel
 
 from .agent_server import AgentServerClient, now_iso
 from .config import (
@@ -18,6 +19,35 @@ from .config import (
 from .state_store import TelegramStateStore
 
 logging.basicConfig(level=logging.INFO, format="[telegram] %(message)s")
+
+
+def _trim_to_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+class TelegramConfigPayload(BaseModel):
+    enabled: bool = False
+    owner_chat_id: str | None = None
+    mode: str = "polling"
+    webhook_url: str | None = None
+
+    def to_config(self, token: str | None = None) -> TelegramIntegrationConfig:
+        normalized_mode = "webhook" if self.mode == "webhook" else "polling"
+        return TelegramIntegrationConfig(
+            enabled=self.enabled,
+            token=token,
+            owner_chat_id=_trim_to_none(self.owner_chat_id),
+            mode=normalized_mode,
+            webhook_url=(
+                _trim_to_none(self.webhook_url)
+                if normalized_mode == "webhook"
+                else None
+            ),
+        )
+
 logger = logging.getLogger("telegram-bridge")
 
 
@@ -46,7 +76,8 @@ class TelegramBridgeService:
         async with self._runtime_lock:
             self._last_error = None
             try:
-                config = await self._agent_server.get_telegram_config()
+                token = await self._agent_server.get_telegram_token()
+                config = self._state_store.get_telegram_config(token=token)
                 self._current = config
                 if not config.enabled:
                     await self._stop_runtime(clear_remote_webhook=True)
@@ -69,6 +100,19 @@ class TelegramBridgeService:
                 self._last_error = str(error)
                 logger.error("Failed to reload Telegram integration: %s", error)
             return self.status_payload()
+
+    async def update_config(self, payload: TelegramConfigPayload) -> dict[str, Any]:
+        self._state_store.save_telegram_config(payload.to_config())
+        return await self.reload()
+
+    def config_payload(self) -> dict[str, Any]:
+        return {
+            "enabled": self._current.enabled,
+            "configured": self._current.configured,
+            "mode": self._current.mode,
+            "owner_chat_id": self._current.owner_chat_id,
+            "webhook_url": self._current.webhook_url,
+        }
 
     def status_payload(self) -> dict[str, Any]:
         status_code = "disabled"
@@ -238,7 +282,7 @@ class TelegramBridgeService:
             mode=self._current.mode,
             webhook_url=self._current.webhook_url,
         )
-        await self._agent_server.save_telegram_config(self._current)
+        self._state_store.save_telegram_config(self._current)
         logger.info("Owner set to chat_id=%s on first message", chat_id)
         return True
 
@@ -329,6 +373,23 @@ def _require_api_key(
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {"status": "ok"}
+
+
+@app.get("/api/integrations/telegram/config")
+async def telegram_config(
+    x_session_api_key: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_api_key(x_session_api_key, config)
+    return service.config_payload()
+
+
+@app.put("/api/integrations/telegram/config")
+async def telegram_update_config(
+    payload: TelegramConfigPayload,
+    x_session_api_key: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_api_key(x_session_api_key, config)
+    return await service.update_config(payload)
 
 
 @app.get("/api/integrations/telegram/status")

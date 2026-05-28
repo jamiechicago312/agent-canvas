@@ -10,6 +10,8 @@ logs/
 dist/
 __pycache__
 *.egg-info/
+telegram/uv.lock
+
 
 
 

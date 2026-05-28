@@ -8,12 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .config import (
-    AppConfig,
-    TELEGRAM_SECRET_NAME,
-    TelegramIntegrationConfig,
-    parse_telegram_config,
-)
+from .config import AppConfig, TELEGRAM_SECRET_NAME
 
 DEFAULT_LLM_MODEL = "openhands/minimax-m2.7"
 DEFAULT_TOOLS = [
@@ -62,24 +57,8 @@ class AgentServerClient:
         response.raise_for_status()
         return response.text.strip() or None
 
-    async def get_telegram_config(self) -> TelegramIntegrationConfig:
-        settings = await self.get_settings()
-        token = await self.get_secret_value(TELEGRAM_SECRET_NAME)
-        return parse_telegram_config(settings.get("agent_settings"), token)
-
-    async def save_telegram_config(self, telegram_config: TelegramIntegrationConfig) -> None:
-        payload = {
-            "agent_settings_diff": {
-                "telegram_integration": {
-                    "enabled": telegram_config.enabled,
-                    "owner_chat_id": telegram_config.owner_chat_id,
-                    "mode": telegram_config.mode,
-                    "webhook_url": telegram_config.webhook_url,
-                }
-            }
-        }
-        response = await self._client.patch("/api/settings", json=payload)
-        response.raise_for_status()
+    async def get_telegram_token(self) -> str | None:
+        return await self.get_secret_value(TELEGRAM_SECRET_NAME)
 
     async def create_conversation(self, initial_text: str | None = None) -> str:
         settings = await self.get_settings(expose_secrets="encrypted")
