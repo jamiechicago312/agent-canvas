@@ -1,7 +1,9 @@
 # agent-canvas
 
 > [!WARNING]
-> This project is in alpha phase. It may be vibecoded, untested, or out of date. [Learn more](https://github.com/OpenHands/incubator-program).
+> This project is in the **Beta** phase. It may be vibecoded, untested, or out of date. OpenHands takes no responsibility for the code or its support. [Learn more](https://github.com/OpenHands/incubator-program).
+
+[![Project Status: Beta](https://img.shields.io/badge/status-beta-blue)](https://github.com/OpenHands/incubator-program)
 
 OpenHands is a platform for orchestrating coding agents across different environments. You can:
 
@@ -21,9 +23,15 @@ The same Agent Canvas frontend can swap between each of these environments, so y
 OpenHands works with any agent harness (e.g. Claude Code, Codex)
 or connect directly to an LLM (e.g. Anthropic, OpenAI, Gemini, Mistral, Minimax, Kimi).
 
-If you have questions or feedback, please open a GitHub issue or join the [#proj-agent-canvas channel in Slack](https://openhands.dev/joinslack)
+If you have questions or feedback, please open a GitHub issue or join the [#proj-agent-canvas channel in Slack](https://openhands.dev/joinslack).
 
 <img width="1509" height="826" alt="Screenshot 2026-05-11 at 10 13 19 AM" src="https://github.com/user-attachments/assets/71ef41ae-8f6d-4fbf-990f-d672175d93d1" />
+
+## Project ownership and support
+
+- **Current status**: Beta.
+- **Support channel**: [#proj-agent-canvas](https://openhands.dev/joinslack).
+- **Support level**: Best effort while the project remains in Beta.
 
 ## Quickstart
 
@@ -32,11 +40,22 @@ or on a server in the cloud.
 
 The most powerful way to run OpenHands is on a server in the cloud. This allows your agents to continue running
 even when your laptop is shut, and makes it easier to trigger your agents through third-party services
-like Slack, GitHub, and Datadog. See [SELF_HOSTING.md](SELF_HOSTING.md) for details, especially with respect to security hardening.
+like Slack, GitHub, and Datadog. See [SELF_HOSTING.md](docs/SELF_HOSTING.md) for details, especially with respect to security hardening.
 
 Notably, you can run the backend in _multiple different environments_, and switch between
 them from the same Agent Canvas frontend. E.g. you can share an Agent Server with your team for agents doing
 code review and dependency updates, then have your personal agents running on your laptop.
+
+The shell snippets below use Terminal on macOS/Linux and PowerShell on Windows when the syntax differs.
+
+### Before you start
+
+Install these prerequisites for your platform:
+
+- **macOS**: Node.js 22.12.x or later and `uv` (for example, `brew install node uv`)
+- **Windows**: Node.js 22.12.x or later and `uv` (for example, `winget install OpenJS.NodeJS.LTS` and `winget install --id=astral-sh.uv -e`)
+
+If you prefer installers instead of package managers, see the [Node.js download page](https://nodejs.org/en/download) and the [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/).
 
 ### Option 1: Without a Sandbox
 
@@ -52,8 +71,10 @@ agent-canvas
 
 ### Option 2: With a Docker Sandbox
 
+**Prerequisites**: Docker Desktop (macOS or Windows) or Docker Engine (Linux)
+
 ```sh
-docker pull ghcr.io/openhands/agent-canvas:1.0.0-alpha.6
+docker pull ghcr.io/openhands/agent-canvas:1.0.0-alpha.8
 
 export PROJECTS_PATH=~/projects  # directory containing your project folders
 
@@ -61,13 +82,13 @@ docker run -it --rm \
   -p 8000:8000 \
   -v ~/.openhands:/home/openhands/.openhands \
   -v ${PROJECTS_PATH}:/projects \
-  ghcr.io/openhands/agent-canvas:1.0.0-alpha.6
+  ghcr.io/openhands/agent-canvas:1.0.0-alpha.8
 ```
 
 PowerShell:
 
 ```powershell
-docker pull ghcr.io/openhands/agent-canvas:1.0.0-alpha.6
+docker pull ghcr.io/openhands/agent-canvas:1.0.0-alpha.8
 
 $projectsPath = Join-Path $HOME "projects"  # directory containing your project folders
 $statePath = Join-Path $HOME ".openhands"
@@ -76,12 +97,10 @@ docker run -it --rm `
   -p 8000:8000 `
   -v "${statePath}:/home/openhands/.openhands" `
   -v "${projectsPath}:/projects" `
-  ghcr.io/openhands/agent-canvas:1.0.0-alpha.6
+  ghcr.io/openhands/agent-canvas:1.0.0-alpha.8
 ```
 
 The agent will be able to access any project under `PROJECTS_PATH` / `$projectsPath`.
-
-
 
 ### Option 3: From Source
 
@@ -124,5 +143,8 @@ The Agent Server is often paired with an [Automation Server](https://github.com/
 
 ## More documentation
 
-- For contributor and developer workflows, including frontend-only mode, mock mode, environment variables, and build/test commands, see [DEVELOPMENT.md](./DEVELOPMENT.md).
-- Clean uninstall guides: [readme-uninstall-windows](./readme-uninstall-windows.md) and [readme-uninstall-mac](./readme-uninstall-mac.md).
+- [Documentation index](./docs/README.md)
+- [Architecture overview](./docs/architecture.md)
+- [Development guide](./docs/DEVELOPMENT.md)
+- [Self-hosting guide](./docs/SELF_HOSTING.md)
+- Clean uninstall guides: [macOS](./readme-uninstall-mac.md) and [Windows](./readme-uninstall-windows.md)

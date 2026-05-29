@@ -1,8 +1,8 @@
-# readme-uninstall-windows
+# Clean uninstall on Windows
 
-Use this if you tried all 3 install paths from the main README and want a clean reset on Windows.
+Use this if you tried one or more install paths from the main README and want a clean reset on Windows.
 
-Run in PowerShell.
+Run these commands in PowerShell.
 
 ## 1) Undo the global npm install
 
@@ -31,15 +31,18 @@ Remove-Item -Recurse -Force <path-to-your-agent-canvas-clone>
 If you want to keep the clone but remove local install artifacts:
 
 ```powershell
-cd <path-to-your-agent-canvas-clone>
+Set-Location <path-to-your-agent-canvas-clone>
 Remove-Item -Recurse -Force .\node_modules -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force .\.agent_tmp -ErrorAction SilentlyContinue
 Remove-Item -Force .\.env -ErrorAction SilentlyContinue
 ```
 
-## 4) Remove shared local state
+## 4) Remove local state created by Agent Canvas
 
 ```powershell
-Remove-Item -Recurse -Force "$HOME\.openhands" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "$HOME\.openhands\agent-canvas" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "$HOME\.openhands\automation" -ErrorAction SilentlyContinue
+Remove-Item -Force "$HOME\.openhands" -ErrorAction SilentlyContinue
 uv cache clean
 ```
 
@@ -53,4 +56,4 @@ Clear site data for:
 ## Notes
 
 - This does **not** delete your own project folders under `PROJECTS_PATH` unless you remove them yourself.
-- If you installed Node, Docker Desktop, `uv`, or Git only for this test, uninstall them with the same tool you used to install them.
+- If you installed Node, Docker Desktop, `uv`, or Git only for this test, uninstall them with the same tool you used to install them (for example `winget`, direct installers, or another package manager).
