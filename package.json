@@ -70,7 +70,8 @@
     "zustand": "5.0.12"
   },
   "scripts": {
-    "dev": "node --env-file-if-exists=.env scripts/dev-with-automation.mjs",
+    "dev": "node --env-file-if-exists=.env scripts/dev-github-windows-stack.mjs",
+    "dev:default": "node --env-file-if-exists=.env scripts/dev-with-automation.mjs",
     "dev:test-github-windows-stack": "node --env-file-if-exists=.env scripts/dev-github-windows-stack.mjs",
     "dev:static": "node --env-file-if-exists=.env scripts/dev-static.mjs",
     "dev:extra-backend": "node --env-file-if-exists=.env scripts/dev-extra-backend.mjs",
