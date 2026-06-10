@@ -23,7 +23,7 @@
     "@heroui/react": "2.8.10",
     "@microlink/react-json-view": "1.31.20",
     "@monaco-editor/react": "4.7.0",
-    "@openhands/extensions": "0.4.0",
+    "@openhands/extensions": "github:jamiechicago312/extensions#fix/github-skills-cross-platform-323",
     "@openhands/typescript-client": "1.24.3",
     "@react-router/node": "7.17.0",
     "@react-router/serve": "7.17.0",
@@ -71,6 +71,7 @@
   },
   "scripts": {
     "dev": "node --env-file-if-exists=.env scripts/dev-with-automation.mjs",
+    "dev:test-cross-platform": "node --env-file-if-exists=.env scripts/dev-test-cross-platform.mjs",
     "dev:static": "node --env-file-if-exists=.env scripts/dev-static.mjs",
     "dev:extra-backend": "node --env-file-if-exists=.env scripts/dev-extra-backend.mjs",
     "dev:minimal": "node --env-file-if-exists=.env scripts/dev-safe.mjs",
