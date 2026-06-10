@@ -1326,8 +1326,35 @@ async function main(options = {}) {
     }
   }
 
-  // 5. Wait for services to be ready
-  await delay(2000);
+  // 5. Wait for launched services to become reachable before exposing ingress.
+  // Without this the browser can hit / or /api/automation/health while Vite or
+  // the automation backend is still booting, which surfaces misleading proxy
+  // errors and an empty automations screen on first load.
+  const readinessChecks = [];
+  if (config.launchAutomation) {
+    readinessChecks.push(
+      waitForService(
+        "automation",
+        `http://localhost:${config.autoBackendPort}${AUTOMATION_ROUTE_PREFIX}/health`,
+        60000,
+      ),
+    );
+  }
+  if (config.launchFrontend) {
+    const frontendUrl = getFrontendBackend(config);
+    if (frontendUrl) {
+      readinessChecks.push(
+        waitForService(
+          useStaticMode ? "static" : "vite",
+          frontendUrl,
+          60000,
+        ),
+      );
+    }
+  }
+  if (readinessChecks.length > 0) {
+    await Promise.all(readinessChecks);
+  }
 
   // 6. Start ingress proxy (routes traffic only to running services)
   startIngress(config);
