@@ -29,6 +29,7 @@
  * Environment variables:
  *   - PORT: Ingress port (default: 8000)
  *   - OH_AUTOMATION_GIT_REF: Git ref for automation (default: main)
+ *   - AUTOMATION_DB_URL: Optional sqlite URL override for the automation DB
  *   - OH_AGENT_SERVER_LOCAL_PATH: Absolute path to a local software-agent-sdk
  *     checkout. Highest precedence for agent-server source selection: rebuilds
  *     the agent-server from local source and installs openhands-sdk,
@@ -250,6 +251,7 @@ ENVIRONMENT VARIABLES:
   PORT                        Alternative to --port
   OH_AUTOMATION_GIT_REF       Git ref for automation (overrides default version)
   OH_AUTOMATION_VERSION       Specific PyPI version for automation (default: ${DEFAULT_AUTOMATION_VERSION})
+  AUTOMATION_DB_URL           Override the automation SQLite DB path/URL
   OH_AGENT_SERVER_LOCAL_PATH  Absolute path to a local software-agent-sdk checkout (highest precedence)
   OH_AGENT_SERVER_GIT_REF     Git ref for agent-server SDK (overrides default version)
   OH_AGENT_SERVER_VERSION     Specific PyPI version for agent-server
@@ -819,8 +821,13 @@ function startAutomationBackend(config) {
             }
           : {}),
         AUTOMATION_AGENT_SERVER_API_KEY: config.sessionApiKey,
-        // ~/.openhands/automation/automations.db — matches docker/entrypoint.sh.
-        AUTOMATION_DB_URL: `sqlite+aiosqlite:///${join(dirname(config.stateDir), SHARED_DEFAULTS.paths.automationDb)}`,
+        // ~/.openhands/automation/automations.db by default — matches docker/entrypoint.sh.
+        // Allow callers to override it so local test harnesses can avoid stale
+        // scheduled automations while still reusing the user's existing LLM
+        // profiles and secrets.
+        AUTOMATION_DB_URL:
+          process.env.AUTOMATION_DB_URL ||
+          `sqlite+aiosqlite:///${join(dirname(config.stateDir), SHARED_DEFAULTS.paths.automationDb)}`,
         // The automation backend uses this as its publicly-reachable base
         // URL: it's appended to callback URLs and injected into each
         // sandbox as `AUTOMATION_API_URL` (consumed by setup.sh for

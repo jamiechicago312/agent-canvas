@@ -71,7 +71,7 @@
   },
   "scripts": {
     "dev": "node --env-file-if-exists=.env scripts/dev-with-automation.mjs",
-    "dev:test-github-windows-stack": "cross-env OH_AUTOMATION_REPO=https://github.com/jamiechicago312/automation.git OH_AUTOMATION_GIT_REF=d20a68c1ef581370d1297da42a9b43a1de3c87b4 node --env-file-if-exists=.env scripts/dev-with-automation.mjs",
+    "dev:test-github-windows-stack": "node --env-file-if-exists=.env scripts/dev-github-windows-stack.mjs",
     "dev:static": "node --env-file-if-exists=.env scripts/dev-static.mjs",
     "dev:extra-backend": "node --env-file-if-exists=.env scripts/dev-extra-backend.mjs",
     "dev:minimal": "node --env-file-if-exists=.env scripts/dev-safe.mjs",
